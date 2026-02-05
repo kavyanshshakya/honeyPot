@@ -142,6 +142,7 @@ async def run_extractor(history: str, latest: str) -> Dict:
         except Exception as e:
             logger.warning(f"Gemini fail {attempt}: {e}")
             await asyncio.sleep(0.5)
+    
     final = regex_res.copy()
     if llm_ext:
         for k in ["bankAccounts", "upiIds", "phishingLinks", "phoneNumbers", "suspiciousKeywords", "tactics"]:
@@ -149,6 +150,12 @@ async def run_extractor(history: str, latest: str) -> Dict:
         final["scamType"] = llm_ext.get("scamType", "unknown")
         final["confidence"] = max(final.get("confidence", 0.0), llm_ext.get("confidence", 0.0))
         final["tactics"] = list(set(final.get("tactics", []) + llm_ext.get("tactics", [])))
+    
+    # Ensure all keys exist (prevents KeyError)
+    final.setdefault("scamType", "unknown")
+    final.setdefault("confidence", 0.0)
+    final.setdefault("tactics", [])
+    
     return validate_extraction(final)
 
 async def run_planner(state: dict):
@@ -216,10 +223,10 @@ async def send_callback(sid: str, state: dict):
             except Exception as e:
                 logger.error(f"Callback Fail {attempt}: {e}")
                 await asyncio.sleep(2 ** attempt)
-                
+
 @app.get("/")
 async def health_check():
-    return {"status": "online", "system": "Agentic Honney-Pot Active"}
+    return {"status": "online", "system": "Agentic Honey-Pot Active"}
     
 @app.exception_handler(Exception)
 async def global_handler(request, exc):
@@ -250,9 +257,11 @@ async def honeypot(body: RequestBody, x_api_key: str = Header(None)):
     if ext:
         for k in ["bankAccounts", "upiIds", "phishingLinks", "phoneNumbers", "suspiciousKeywords", "tactics"]:
             state["extracted"][k] = list(set(state["extracted"].get(k, []) + ext.get(k, [])))
-        if ext.get("scamType") != "unknown":
+        
+        # SAFE ACCESS - No more KeyError
+        if ext.get("scamType") and ext.get("scamType") != "unknown":
             state["extracted"]["scamType"] = ext["scamType"]
-        state["extracted"]["confidence"] = max(state["extracted"].get("confidence", 0), ext.get("confidence", 0))
+        state["extracted"]["confidence"] = max(state["extracted"].get("confidence", 0.0), ext.get("confidence", 0.0))
 
     if state["scam_detected"]:
         planner_res = await run_planner(state)
