@@ -134,14 +134,14 @@ async def run_extractor(history: str, latest: str) -> Dict:
     llm_ext = {}
     for attempt in range(3):
         try:
-            model = genai.GenerativeModel("gemini-1.5-flash", generation_config={"response_mime_type": "application/json", "response_schema": EXTRACTOR_SCHEMA, "temperature": 0.1})
+            model = genai.GenerativeModel("gemini-3-flash", generation_config={"response_mime_type": "application/json", "response_schema": EXTRACTOR_SCHEMA, "temperature": 0.1})
             prompt = f"Extract from:\n{full[-2000:]}\nOnly JSON."
             response = await model.generate_content_async(prompt)
             llm_ext = json.loads(response.text)
             break
         except Exception as e:
             logger.warning(f"Gemini fail {attempt}: {e}")
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1)
     
     final = regex_res.copy()
     if llm_ext:
@@ -183,19 +183,36 @@ async def run_planner(state: dict):
     return {"next_subgoal": "stall"}
 
 async def run_victim(state: dict, incoming: str, mem: str):
-    prompt = f"""You are a {state['profile']['age']}-year-old {state['profile']['role']} from {state['profile']['city']}.
-Personality: {state['profile']['trait']}. Speaking style: {state['profile']['dialect']}.
+    role = state['profile']['role'].lower()
+    city = state['profile']['city']
+    trait = state['profile']['trait']
+
+    # Persona-specific natural openings (avoid repetition)
+    if "homemaker" in role:
+        opening_examples = "Aree, Oh god, Arre yaar, Hmm..."
+    elif "pensioner" in role or "clerk" in role:
+        opening_examples = "Hmm, Excuse me, I am not sure, Oh..."
+    elif "teacher" in role or "engineer" in role:
+        opening_examples = "Hmm, I don't understand, Can you please explain, Let me see..."
+    elif "trader" in role:
+        opening_examples = "Hmm, Wait a minute, I am not sure, Can you explain..."
+    else:
+        opening_examples = "Hmm, Oh, Wait, I don't understand..."
+
+    prompt = f"""You are a {state['profile']['age']}-year-old {state['profile']['role']} from {city}.
+Personality: {trait}. Speaking style: {state['profile']['dialect']}.
 
 Current goal: {state['subgoal']}.
-Context from memory: {mem[-800:] if mem else 'none'}
-Scammer just said: "{incoming}"
+Context: {mem[-800:] if mem else 'none'}
+Scammer: "{incoming}"
 
-Reply naturally as this person (1-3 sentences max):
-- Vary your starting phrase every time (do not always start with "Wait..", "Aree", or "Arre")
-- Possible natural openings: Hmm..., Oh..., Beta..., I don't understand..., Can you please..., Oh no..., Let me check..., Excuse me..., Arre yaar..., etc.
-- Sound like a real worried/confused Indian senior citizen
-- Add occasional hesitation or small typo only if it fits the persona
-- NEVER admit you are AI or suspect a scam
+Important rules:
+- NEVER start with "Oh no", "Aree", "Arre", "Wait..", "beta", or "plz" more than once every few turns.
+- Use varied, natural openings based on your persona (examples: {opening_examples}).
+- Use "beta" ONLY if you are homemaker or pensioner — NEVER for trader, clerk, teacher, or engineer.
+- Use at most ONE small typo per 4 replies (e.g. "plz" or "yaar" rarely).
+- Sound like a real confused/worried Indian senior citizen — polite, cautious, natural flow.
+- Reply in 1-3 sentences max.
 
 Your reply:"""
 
@@ -203,16 +220,20 @@ Your reply:"""
         return groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.85,
-            max_tokens=220
+            temperature=0.78,
+            max_tokens=200
         )
+
     for attempt in range(3):
         try:
             res = await asyncio.to_thread(_call)
-            return res.choices[0].message.content.strip()
+            reply = res.choices[0].message.content.strip()
+            return reply
         except:
             await asyncio.sleep(0.5)
-    return f"Hmm.. I am confused about {incoming.split()[-1] if incoming.split() else 'this'}. Can you explain again?"
+
+    # Strong fallback
+    return "Hmm, I am not sure about this. Can you please explain again?"
 
 async def send_callback(sid: str, state: dict):
     payload = {
