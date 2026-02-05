@@ -6,6 +6,7 @@ import logging
 import random
 import re
 import traceback
+import time
 from typing import Dict, List
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
@@ -70,6 +71,8 @@ session_store: Dict[str, dict] = {}
 
 def get_session(sid: str):
     if sid not in session_store:
+        seed_val = sid + str(time.time())
+        rng = random.Random(seed_val)
         profiles = [
             {"age": 64, "role": "retired clerk", "city": "Pune", "trait": "nervous, pension-focused", "dialect": "Formal Indian English"},
             {"age": 57, "role": "homemaker", "city": "Delhi", "trait": "worried about family, daily UPI user", "dialect": "Hinglish"},
