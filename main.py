@@ -15,7 +15,7 @@ import google.generativeai as genai
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-app = FastAPI(title="Agentic Honey-Pot Platinum v5 Final")
+app = FastAPI(title="Agentic Honey-Pot")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -216,7 +216,11 @@ async def send_callback(sid: str, state: dict):
             except Exception as e:
                 logger.error(f"Callback Fail {attempt}: {e}")
                 await asyncio.sleep(2 ** attempt)
-
+                
+@app.get("/")
+async def health_check():
+    return {"status": "online", "system": "Agentic Honney-Pot Active"}
+    
 @app.exception_handler(Exception)
 async def global_handler(request, exc):
     logger.critical(traceback.format_exc())
