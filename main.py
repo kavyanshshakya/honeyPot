@@ -183,12 +183,22 @@ async def run_planner(state: dict):
     return {"next_subgoal": "stall"}
 
 async def run_victim(state: dict, incoming: str, mem: str):
-    prompt = f"""You are {state['profile']['age']}yo {state['profile']['role']} from {state['profile']['city']}.
-Trait: {state['profile']['trait']}. Dialect: {state['profile']['dialect']}.
-Goal: {state['subgoal']}.
-Memory: {mem[-800:]}.
-Scammer: "{incoming}".
-Reply 1-3 sentences, natural, hesitant ("wait..", "plz help"), Hinglish ok. Cooperative but probing. NEVER admit AI."""
+    prompt = f"""You are a {state['profile']['age']}-year-old {state['profile']['role']} from {state['profile']['city']}.
+Personality: {state['profile']['trait']}. Speaking style: {state['profile']['dialect']}.
+
+Current goal: {state['subgoal']}.
+Context from memory: {mem[-800:] if mem else 'none'}
+Scammer just said: "{incoming}"
+
+Reply naturally as this person (1-3 sentences max):
+- Vary your starting phrase every time (do not always start with "Wait..", "Aree", or "Arre")
+- Possible natural openings: Hmm..., Oh..., Beta..., I don't understand..., Can you please..., Oh no..., Let me check..., Excuse me..., Arre yaar..., etc.
+- Sound like a real worried/confused Indian senior citizen
+- Add occasional hesitation or small typo only if it fits the persona
+- NEVER admit you are AI or suspect a scam
+
+Your reply:"""
+
     def _call():
         return groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -202,7 +212,7 @@ Reply 1-3 sentences, natural, hesitant ("wait..", "plz help"), Hinglish ok. Coop
             return res.choices[0].message.content.strip()
         except:
             await asyncio.sleep(0.5)
-    return f"Wait.. I am confused about {incoming.split()[-1] if incoming.split() else 'this'}. Can you explain again?"
+    return f"Hmm.. I am confused about {incoming.split()[-1] if incoming.split() else 'this'}. Can you explain again?"
 
 async def send_callback(sid: str, state: dict):
     payload = {
