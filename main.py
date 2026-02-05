@@ -134,7 +134,7 @@ async def run_extractor(history: str, latest: str) -> Dict:
     llm_ext = {}
     for attempt in range(3):
         try:
-            model = genai.GenerativeModel("gemini-3-flash", generation_config={"response_mime_type": "application/json", "response_schema": EXTRACTOR_SCHEMA, "temperature": 0.1})
+            model = genai.GenerativeModel("gemini-2.5-flash", generation_config={"response_mime_type": "application/json", "response_schema": EXTRACTOR_SCHEMA, "temperature": 0.1})
             prompt = f"Extract from:\n{full[-2000:]}\nOnly JSON."
             response = await model.generate_content_async(prompt)
             llm_ext = json.loads(response.text)
