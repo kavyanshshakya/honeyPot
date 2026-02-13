@@ -7,3 +7,6 @@ httpx
 python-dotenv
 scikit-learn
 numpy
+pandas
+streamlit
+aiosqlite
