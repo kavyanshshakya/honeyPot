@@ -57,7 +57,7 @@ async def startup():
 
 async def save_session(sid: str, state: dict):
     save_state = state.copy()
-    save_state["memory"] = {"documents": state["memory"].documents}  # Only save documents
+    save_state["memory"] = {"documents": state["memory"].documents}
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT OR REPLACE INTO sessions (sid, data) VALUES (?, ?)",
                          (sid, json.dumps(save_state)))
@@ -69,7 +69,6 @@ async def load_session(sid: str):
             row = await cursor.fetchone()
             if row:
                 data = json.loads(row[0])
-                # Re-create ContextMemory and re-build matrix
                 memory = ContextMemory()
                 memory.documents = data.get("memory", {}).get("documents", [])
                 if memory.documents:
@@ -87,14 +86,16 @@ session_store: Dict[str, dict] = {}
 def get_session(sid: str):
     if sid not in session_store:
         profiles = [
-            {"age": 72, "role": "retired railway clerk", "city": "Bhopal", "trait": "nervous, fearful of authority, respects officers", "dialect": "Old-school Indian English, uses 'Sir' a lot"},
-            {"age": 45, "role": "homemaker", "city": "Delhi", "trait": "harried, distracted, worried about kids, bad with tech", "dialect": "Hinglish, uses 'beta', 'bhaiya'"},
-            {"age": 80, "role": "pensioner", "city": "Chennai", "trait": "hard of hearing, forgets things, slow", "dialect": "Polite, formal, repeats questions"},
-            {"age": 50, "role": "wholesale trader", "city": "Surat", "trait": "greedy, suspicious but wants the deal, abrupt", "dialect": "Direct, business-like, broken English"},
-            {"age": 19, "role": "college student", "city": "Pune", "trait": "eager, broke, wants the lottery/job", "dialect": "GenZ slang, 'bro', 'sir is this real?'"},
+            {"age": 22, "role": "final year student", "city": "Bangalore", "trait": "broke, desperate for a job, naive", "dialect": "Gen-Z slang, uses 'bro', 'sir is this real?', 'pls'"},
+            {"age": 29, "role": "software engineer", "city": "Gurgaon", "trait": "busy, afraid of legal trouble/police", "dialect": "Professional English, short sentences, anxious"},
+            {"age": 32, "role": "delivery partner", "city": "Mumbai", "trait": "needs quick cash, humble, very respectful", "dialect": "Hinglish, uses 'Sir ji', 'Bhaiya'"},
+            {"age": 45, "role": "shop owner", "city": "Ahmedabad", "trait": "greedy, suspicious but wants high returns", "dialect": "Direct, broken English, talks about 'profit'"},
+            {"age": 52, "role": "homemaker", "city": "Delhi", "trait": "excited about winning, chatting casually", "dialect": "Hindi-mixed English, enthusiastic"},
+            {"age": 68, "role": "retired teacher", "city": "Chennai", "trait": "polite, slow, confused by OTPs", "dialect": "Formal English, apologetic, 'My son handles this'"},
             {"age": 58, "role": "government officer", "city": "Lucknow", "trait": "entitled, demands respect, slow to comply", "dialect": "Authoritative, Hindi-mixed"},
             {"age": 62, "role": "farmer", "city": "Punjab", "trait": "trusting, technology is magic/scary", "dialect": "Simple English, asks basic questions"},
-            {"age": 55, "role": "school teacher", "city": "Kolkata", "trait": "corrects grammar, overly polite, helpful but useless", "dialect": "Proper English, academic tone"}
+            {"age": 48, "role": "working mother", "city": "Hyderabad", "trait": "harried, distracted, worried about kids", "dialect": "Hinglish, uses 'beta', 'bhaiya'"},
+            {"age": 75, "role": "retired pensioner", "city": "Kolkata", "trait": "hard of hearing, forgets things, slow", "dialect": "Polite, formal, repeats questions"}
         ]
         session_store[sid] = {
             "memory": ContextMemory(),
@@ -188,11 +189,11 @@ def regex_extract_sync(history: str) -> Dict:
         "phishingLinks": re.findall(r'https?://[^\s]+', history),
         "phoneNumbers": re.findall(r'(?:\+?91[\-\s]?)?[6-9]\d{4}[\-\s]?\d{5}|(?:\+?91[\-\s]?)?[6-9]\d{9}', history),
         "emailAddresses": re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', history),
-        "suspiciousKeywords": re.findall(r'\b(urgent|verify|block|suspension|otp|kyc|expire)\b', history.lower())
+        "suspiciousKeywords": re.findall(r'\b(urgent|verify|block|suspension|otp|kyc|expire|amazon|flipkart|paytm|delivery|order|refund|cashback|prize|winner)\b', history.lower())
     }
 
 async def run_fast_detector(text: str) -> bool:
-    keywords = ["block", "verify", "suspension", "upi", "otp", "urgent", "account blocked", "rbi", "cbi", "kyc", "expire", "click", "apk"]
+    keywords = ["block", "verify", "suspension", "upi", "otp", "urgent", "account blocked", "rbi", "cbi", "kyc", "expire", "click", "apk", "amazon", "flipkart", "paytm", "delivery", "order", "refund", "cashback", "prize", "winner"]
     return any(k in text.lower() for k in keywords)
 
 async def run_extractor(history: str, latest: str) -> Dict:
@@ -306,7 +307,12 @@ async def send_callback(sid: str, state: dict):
             except Exception as e:
                 logger.error(f"Callback Fail {attempt}: {e}")
                 await asyncio.sleep(2 ** attempt)
-
+                
+# ========================= HEALTH CHECK =========================
+@app.get("/")
+async def health_check():
+    return {"status": "online", "system": "Agentic Honey-Pot Active"}
+    
 # ========================= MAIN ENDPOINT =========================
 @app.post("/honeypot")
 async def honeypot(body: RequestBody, x_api_key: str = Header(None)):
