@@ -6,6 +6,7 @@ import logging
 import random
 import re
 import traceback
+import time
 from typing import Dict, List
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
@@ -247,7 +248,7 @@ async def run_planner(state: dict):
             await asyncio.sleep(0.5)
     return {"next_subgoal": "stall"}
 
-# ========================= IMPROVED VICTIM PROMPT (Fixed Repetition) =========================
+# ========================= VICTIM PROMPT (Fixed Repetition) =========================
 async def run_victim(state: dict, incoming: str, mem: str):
     role = state['profile']['role'].lower()
     city = state['profile']['city']
