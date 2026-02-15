@@ -115,7 +115,8 @@ def get_session(sid: str):
                 "scamType": "unknown",
                 "confidence": 0.0
             },
-            "callback_sent": False
+            "callback_sent": False,
+            "recent_openings": []   # NEW: Tracks recent openings to avoid repetition
         }
     return session_store[sid]
 
@@ -246,47 +247,59 @@ async def run_planner(state: dict):
             await asyncio.sleep(0.5)
     return {"next_subgoal": "stall"}
 
+# ========================= IMPROVED VICTIM PROMPT (Fixed Repetition) =========================
 async def run_victim(state: dict, incoming: str, mem: str):
     role = state['profile']['role'].lower()
     city = state['profile']['city']
     trait = state['profile']['trait']
     dialect = state['profile']['dialect']
 
-    prompt = f"""You are acting as a victim to waste a scammer's time.
-Identity: {state['profile']['age']}yo {state['profile']['role']} from {city}.
-Personality: {trait}. Dialect: {dialect}.
+    # Track recent openings to prevent repetition
+    if "recent_openings" not in state:
+        state["recent_openings"] = []
 
-Current Goal: {state['subgoal']} (Strategy: Use this to trick them).
-Chat History: {mem[-600:] if mem else 'start'}.
+    prompt = f"""You are a real {state['profile']['age']}-year-old {state['profile']['role']} from {city}.
+Personality: {trait}. Speaking style: {dialect}.
+
+Current goal: {state['subgoal']}.
+Recent conversation: {mem[-700:] if mem else 'start'}.
 Scammer said: "{incoming}"
 
-TACTICS:
-1. If Goal is 'feign_failure': Say your app is showing 'Server Error' or 'Loading...'. Ask for *their* UPI/Bank to send money manually.
-2. If Goal is 'bait_greed': Mention casually: "I have 5 lakhs in this account, I don't want to lose it!"
-3. If Goal is 'stall': Ask a stupid question like "Is the office open today?" or "Do I need my passbook?".
-4. IMPERFECTION: Use 1-2 typos or missing punctuation. If you are old, use ALL CAPS occasionally.
+CRITICAL RULES (Follow strictly):
+- NEVER repeat the same opening phrase. You have used these recently: {state["recent_openings"][-5:]} 
+- Do NOT start with "Aree", "Arre", "Oh god", "Hmm...", "Wait..", "Oh no" more than once every 6-7 replies.
+- Vary your starting words every single time. Be creative and natural.
+- Use "beta" ONLY if you are homemaker or pensioner — NEVER for others.
+- Use at most ONE small typo or hesitation per reply.
+- Sound like a real confused/worried Indian senior citizen — polite, cautious, slightly slow.
+- Reply in 1-3 short sentences max.
 
-CONSTRAINTS:
-- Reply length: Short (1-2 sentences). Real victims text fast.
-- NEVER say "I am AI".
-- NEVER give real info. If asked for OTP, say "Wait, SMS not coming".
-
-Generate reply:"""
+Generate a fresh, natural reply:"""
 
     def _call():
         return groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.85,
-            max_tokens=150
+            temperature=0.88,
+            max_tokens=160
         )
+
     for attempt in range(3):
         try:
             res = await asyncio.to_thread(_call)
-            return res.choices[0].message.content.strip()
+            reply = res.choices[0].message.content.strip()
+
+            # Record the first word to avoid repetition next time
+            first_word = reply.split()[0] if reply and reply.split() else "Hmm"
+            state["recent_openings"].append(first_word)
+            if len(state["recent_openings"]) > 10:
+                state["recent_openings"] = state["recent_openings"][-10:]
+
+            return reply
         except:
             await asyncio.sleep(0.5)
-    return "Wait... my internet is slow. Message not sending."
+
+    return "I'm a bit confused... Can you say that again please?"
 
 async def send_callback(sid: str, state: dict):
     payload = {
@@ -307,12 +320,12 @@ async def send_callback(sid: str, state: dict):
             except Exception as e:
                 logger.error(f"Callback Fail {attempt}: {e}")
                 await asyncio.sleep(2 ** attempt)
-                
+
 # ========================= HEALTH CHECK =========================
 @app.get("/")
 async def health_check():
     return {"status": "online", "system": "Agentic Honey-Pot Active"}
-    
+
 # ========================= MAIN ENDPOINT =========================
 @app.post("/honeypot")
 async def honeypot(body: RequestBody, x_api_key: str = Header(None)):
