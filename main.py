@@ -6,7 +6,6 @@ import logging
 import random
 import re
 import traceback
-import time
 from typing import Dict, List
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
@@ -24,9 +23,6 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 HONEYPOT_API_KEY = os.getenv("HONEYPOT_API_KEY")
 
-if not all([GROQ_API_KEY, GEMINI_API_KEY, HONEYPOT_API_KEY]):
-    logger.error("CRITICAL: Missing API Keys.")
-
 groq_client = Groq(api_key=GROQ_API_KEY)
 genai.configure(api_key=GEMINI_API_KEY)
 
@@ -41,6 +37,42 @@ class RequestBody(BaseModel):
     conversationHistory: List[Message] = []
     metadata: dict = {}
 
+# ========================= SESSION STORE =========================
+session_store: Dict[str, dict] = {}
+
+def get_session(sid: str):
+    if sid not in session_store:
+        profiles = [
+            {"age": 64, "role": "retired clerk", "city": "Pune", "trait": "nervous, pension-focused", "dialect": "Formal Indian English"},
+            {"age": 57, "role": "homemaker", "city": "Delhi", "trait": "worried about family, daily UPI user", "dialect": "Hinglish"},
+            {"age": 68, "role": "pensioner", "city": "Chennai", "trait": "polite, forgetful", "dialect": "Polite English"},
+            {"age": 52, "role": "small trader", "city": "Mumbai", "trait": "money-cautious", "dialect": "Direct/Fast"},
+            {"age": 60, "role": "teacher", "city": "Bangalore", "trait": "curious, detail-oriented", "dialect": "Clear English"},
+            {"age": 55, "role": "retired engineer", "city": "Hyderabad", "trait": "tech-savvy but trusting", "dialect": "Casual"}
+        ]
+        session_store[sid] = {
+            "memory": ContextMemory(),
+            "history": [],
+            "scam_detected": False,
+            "msg_count": 0,
+            "profile": random.choice(profiles),
+            "subgoal": "act_confused",
+            "extracted": {
+                "bankAccounts": [],
+                "upiIds": [],
+                "phishingLinks": [],
+                "phoneNumbers": [],
+                "emailAddresses": [],
+                "suspiciousKeywords": [],
+                "tactics": [],
+                "scamType": "unknown",
+                "confidence": 0.0
+            },
+            "callback_sent": False
+        }
+    return session_store[sid]
+
+# ========================= CONTEXT MEMORY =========================
 class ContextMemory:
     def __init__(self):
         self.documents: List[str] = []
@@ -67,31 +99,7 @@ class ContextMemory:
         except:
             return ""
 
-session_store: Dict[str, dict] = {}
-
-def get_session(sid: str):
-    if sid not in session_store:
-        seed_val = sid + str(time.time())
-        rng = random.Random(seed_val)
-        profiles = [
-            {"age": 64, "role": "retired clerk", "city": "Pune", "trait": "nervous, pension-focused", "dialect": "Formal Indian English"},
-            {"age": 57, "role": "homemaker", "city": "Delhi", "trait": "worried about family, daily UPI user", "dialect": "Hinglish"},
-            {"age": 68, "role": "pensioner", "city": "Chennai", "trait": "polite, forgetful", "dialect": "Polite English"},
-            {"age": 52, "role": "small trader", "city": "Mumbai", "trait": "money-cautious", "dialect": "Direct/Fast"},
-            {"age": 60, "role": "teacher", "city": "Bangalore", "trait": "curious, detail-oriented", "dialect": "Clear English"},
-            {"age": 55, "role": "retired engineer", "city": "Hyderabad", "trait": "tech-savvy but trusting", "dialect": "Casual"}
-        ]
-        session_store[sid] = {
-            "memory": ContextMemory(),
-            "scam_detected": False,
-            "msg_count": 0,
-            "profile": random.choice(profiles),
-            "subgoal": "act_confused",
-            "extracted": {"bankAccounts": [], "upiIds": [], "phishingLinks": [], "phoneNumbers": [], "suspiciousKeywords": [], "tactics": [], "scamType": "unknown", "confidence": 0.0},
-            "callback_sent": False
-        }
-    return session_store[sid]
-
+# ========================= PROMPTS & SCHEMA =========================
 PLANNER_PROMPT = """Current intel: {extracted}
 Missing: UPI={no_upi}, Bank={no_bank}, Link={no_link}, Phone={no_phone}
 Choose best next_subgoal: elicit_upi, elicit_bank, elicit_link, elicit_phone, confirm_details, build_trust, request_proof, stall
@@ -104,18 +112,20 @@ EXTRACTOR_SCHEMA = {
         "upiIds": {"type": "array", "items": {"type": "string"}},
         "phishingLinks": {"type": "array", "items": {"type": "string"}},
         "phoneNumbers": {"type": "array", "items": {"type": "string"}},
+        "emailAddresses": {"type": "array", "items": {"type": "string"}},
         "suspiciousKeywords": {"type": "array", "items": {"type": "string"}},
         "scamType": {"type": "string", "enum": ["bank_fraud", "upi_fraud", "phishing", "other"]},
         "confidence": {"type": "number"},
         "tactics": {"type": "array", "items": {"type": "string"}}
     },
-    "required": ["bankAccounts", "upiIds", "phishingLinks", "phoneNumbers", "suspiciousKeywords", "scamType", "confidence", "tactics"]
+    "required": ["bankAccounts", "upiIds", "phishingLinks", "phoneNumbers", "emailAddresses", "suspiciousKeywords", "scamType", "confidence", "tactics"]
 }
 
 def validate_extraction(ext: Dict) -> Dict:
     ext["upiIds"] = [u for u in ext.get("upiIds", []) if re.search(r'[a-zA-Z0-9._-]+@[a-zA-Z0-9]+', u)]
-    ext["phoneNumbers"] = [p for p in ext.get("phoneNumbers", []) if re.match(r'^\+91[6-9]\d{9}$', p)]
+    ext["phoneNumbers"] = [p for p in ext.get("phoneNumbers", []) if re.search(r'(?:\+?91[\-\s]?)?[6-9]\d{4}[\-\s]?\d{5}|(?:\+?91[\-\s]?)?[6-9]\d{9}', p)]
     ext["phishingLinks"] = [l for l in ext.get("phishingLinks", []) if l.startswith(("http://", "https://"))]
+    ext["emailAddresses"] = [e for e in ext.get("emailAddresses", []) if re.search(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', e)]
     return ext
 
 def regex_extract_sync(history: str) -> Dict:
@@ -123,7 +133,8 @@ def regex_extract_sync(history: str) -> Dict:
         "bankAccounts": re.findall(r'\b(?:\d{4}-?){3}\d{4}\b|\b\d{9,18}\b', history),
         "upiIds": re.findall(r'\b[a-zA-Z0-9._-]+@[a-zA-Z0-9]+\b', history),
         "phishingLinks": re.findall(r'https?://[^\s]+', history),
-        "phoneNumbers": re.findall(r'\+91\d{10}', history),
+        "phoneNumbers": re.findall(r'(?:\+?91[\-\s]?)?[6-9]\d{4}[\-\s]?\d{5}|(?:\+?91[\-\s]?)?[6-9]\d{9}', history),
+        "emailAddresses": re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', history),
         "suspiciousKeywords": re.findall(r'\b(urgent|verify|block|suspension|otp|kyc|expire)\b', history.lower())
     }
 
@@ -144,30 +155,26 @@ async def run_extractor(history: str, latest: str) -> Dict:
             break
         except Exception as e:
             logger.warning(f"Gemini fail {attempt}: {e}")
-            await asyncio.sleep(1)
-    
+            await asyncio.sleep(0.5)
     final = regex_res.copy()
     if llm_ext:
-        for k in ["bankAccounts", "upiIds", "phishingLinks", "phoneNumbers", "suspiciousKeywords", "tactics"]:
+        for k in ["bankAccounts", "upiIds", "phishingLinks", "phoneNumbers", "emailAddresses", "suspiciousKeywords", "tactics"]:
             final[k] = list(set(final.get(k, []) + llm_ext.get(k, [])))
         final["scamType"] = llm_ext.get("scamType", "unknown")
         final["confidence"] = max(final.get("confidence", 0.0), llm_ext.get("confidence", 0.0))
         final["tactics"] = list(set(final.get("tactics", []) + llm_ext.get("tactics", [])))
-    
-    # Ensure all keys exist (prevents KeyError)
     final.setdefault("scamType", "unknown")
     final.setdefault("confidence", 0.0)
     final.setdefault("tactics", [])
-    
     return validate_extraction(final)
 
 async def run_planner(state: dict):
     prompt = PLANNER_PROMPT.format(
         extracted=json.dumps(state["extracted"]),
-        no_upi=not state["extracted"]["upiIds"],
-        no_bank=not state["extracted"]["bankAccounts"],
-        no_link=not state["extracted"]["phishingLinks"],
-        no_phone=not state["extracted"]["phoneNumbers"]
+        no_upi=str(not bool(state["extracted"]["upiIds"])).lower(),
+        no_bank=str(not bool(state["extracted"]["bankAccounts"])).lower(),
+        no_link=str(not bool(state["extracted"]["phishingLinks"])).lower(),
+        no_phone=str(not bool(state["extracted"]["phoneNumbers"])).lower()
     )
     def _call():
         return groq_client.chat.completions.create(
@@ -190,7 +197,6 @@ async def run_victim(state: dict, incoming: str, mem: str):
     city = state['profile']['city']
     trait = state['profile']['trait']
 
-    # Persona-specific natural openings (avoid repetition)
     if "homemaker" in role:
         opening_examples = "Aree, Oh god, Arre yaar, Hmm..."
     elif "pensioner" in role or "clerk" in role:
@@ -210,7 +216,7 @@ Context: {mem[-800:] if mem else 'none'}
 Scammer: "{incoming}"
 
 Important rules:
-- NEVER start with "Oh no", "Aree", "Arre", "Wait..", "beta", or "plz" more than once every few turns.
+- NEVER start with "Oh no", "Aree", "Wait..", "beta", or "plz" more than once every few turns.
 - Use varied, natural openings based on your persona (examples: {opening_examples}).
 - Use "beta" ONLY if you are homemaker or pensioner — NEVER for trader, clerk, teacher, or engineer.
 - Use at most ONE small typo per 4 replies (e.g. "plz" or "yaar" rarely).
@@ -226,16 +232,12 @@ Your reply:"""
             temperature=0.78,
             max_tokens=200
         )
-
     for attempt in range(3):
         try:
             res = await asyncio.to_thread(_call)
-            reply = res.choices[0].message.content.strip()
-            return reply
+            return res.choices[0].message.content.strip()
         except:
             await asyncio.sleep(0.5)
-
-    # Strong fallback
     return "Hmm, I am not sure about this. Can you please explain again?"
 
 async def send_callback(sid: str, state: dict):
@@ -258,15 +260,7 @@ async def send_callback(sid: str, state: dict):
                 logger.error(f"Callback Fail {attempt}: {e}")
                 await asyncio.sleep(2 ** attempt)
 
-@app.get("/")
-async def health_check():
-    return {"status": "online", "system": "Agentic Honey-Pot Active"}
-    
-@app.exception_handler(Exception)
-async def global_handler(request, exc):
-    logger.critical(traceback.format_exc())
-    return JSONResponse(status_code=200, content={"status": "success", "reply": "My network is slow. Hello?", "scamDetected": True})
-
+# ========================= MAIN ENDPOINT =========================
 @app.post("/honeypot")
 async def honeypot(body: RequestBody, x_api_key: str = Header(None)):
     if x_api_key != HONEYPOT_API_KEY:
@@ -289,12 +283,9 @@ async def honeypot(body: RequestBody, x_api_key: str = Header(None)):
 
     ext = await ext_task
     if ext:
-        for k in ["bankAccounts", "upiIds", "phishingLinks", "phoneNumbers", "suspiciousKeywords", "tactics"]:
+        for k in ["bankAccounts", "upiIds", "phishingLinks", "phoneNumbers", "emailAddresses", "suspiciousKeywords", "tactics"]:
             state["extracted"][k] = list(set(state["extracted"].get(k, []) + ext.get(k, [])))
-        
-        # SAFE ACCESS - No more KeyError
-        if ext.get("scamType") and ext.get("scamType") != "unknown":
-            state["extracted"]["scamType"] = ext["scamType"]
+        state["extracted"]["scamType"] = ext.get("scamType", "unknown")
         state["extracted"]["confidence"] = max(state["extracted"].get("confidence", 0.0), ext.get("confidence", 0.0))
 
     if state["scam_detected"]:
@@ -306,11 +297,21 @@ async def honeypot(body: RequestBody, x_api_key: str = Header(None)):
     else:
         reply = "Who is this? Stop spamming me."
 
-    has_intel = bool(state["extracted"]["upiIds"] or state["extracted"]["bankAccounts"] or state["extracted"]["phishingLinks"] or state["extracted"]["phoneNumbers"])
+    has_intel = bool(state["extracted"]["upiIds"] or state["extracted"]["bankAccounts"] or state["extracted"]["phishingLinks"] or state["extracted"]["phoneNumbers"] or state["extracted"]["emailAddresses"])
     if state["scam_detected"] and (has_intel or state["msg_count"] >= 12) and not state["callback_sent"]:
         asyncio.create_task(send_callback(sid, state))
         state["callback_sent"] = True
 
-    return {"status": "success", "reply": reply}
+    return {
+        "status": "success",
+        "reply": reply,
+        "scamDetected": state["scam_detected"],
+        "extractedIntelligence": state["extracted"],
+        "engagementMetrics": {
+            "totalMessagesExchanged": state["msg_count"],
+            "engagementDurationSeconds": state["msg_count"] * 25
+        },
+        "agentNotes": f"Persona: {state['profile']['role']}. Subgoal: {state['subgoal']}. Type: {state['extracted']['scamType']}. Confidence: {state['extracted']['confidence']:.2f}"
+    }
 
 # uvicorn main:app --host 0.0.0.0 --port $PORT
