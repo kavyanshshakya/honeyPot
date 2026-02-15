@@ -14,6 +14,7 @@ from groq import Groq
 import google.generativeai as genai
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+import aiosqlite
 
 app = FastAPI(title="Agentic Honey-Pot")
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 HONEYPOT_API_KEY = os.getenv("HONEYPOT_API_KEY")
+DB_PATH = "honeypot.db"
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 genai.configure(api_key=GEMINI_API_KEY)
@@ -37,18 +39,62 @@ class RequestBody(BaseModel):
     conversationHistory: List[Message] = []
     metadata: dict = {}
 
-# ========================= SESSION STORE =========================
+# ========================= SQLITE PERSISTENCE =========================
+async def init_db():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                sid TEXT PRIMARY KEY,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                data TEXT
+            )
+        """)
+        await db.commit()
+
+@app.on_event("startup")
+async def startup():
+    await init_db()
+
+async def save_session(sid: str, state: dict):
+    save_state = state.copy()
+    save_state["memory"] = {"documents": state["memory"].documents}  # Only save documents
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT OR REPLACE INTO sessions (sid, data) VALUES (?, ?)",
+                         (sid, json.dumps(save_state)))
+        await db.commit()
+
+async def load_session(sid: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT data FROM sessions WHERE sid = ?", (sid,)) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                data = json.loads(row[0])
+                # Re-create ContextMemory and re-build matrix
+                memory = ContextMemory()
+                memory.documents = data.get("memory", {}).get("documents", [])
+                if memory.documents:
+                    try:
+                        memory.matrix = memory.vectorizer.fit_transform(memory.documents)
+                    except:
+                        pass
+                data["memory"] = memory
+                return data
+    return None
+
+# ========================= SESSION MANAGEMENT =========================
 session_store: Dict[str, dict] = {}
 
 def get_session(sid: str):
     if sid not in session_store:
         profiles = [
-            {"age": 64, "role": "retired clerk", "city": "Pune", "trait": "nervous, pension-focused", "dialect": "Formal Indian English"},
-            {"age": 57, "role": "homemaker", "city": "Delhi", "trait": "worried about family, daily UPI user", "dialect": "Hinglish"},
-            {"age": 68, "role": "pensioner", "city": "Chennai", "trait": "polite, forgetful", "dialect": "Polite English"},
-            {"age": 52, "role": "small trader", "city": "Mumbai", "trait": "money-cautious", "dialect": "Direct/Fast"},
-            {"age": 60, "role": "teacher", "city": "Bangalore", "trait": "curious, detail-oriented", "dialect": "Clear English"},
-            {"age": 55, "role": "retired engineer", "city": "Hyderabad", "trait": "tech-savvy but trusting", "dialect": "Casual"}
+            {"age": 72, "role": "retired railway clerk", "city": "Bhopal", "trait": "nervous, fearful of authority, respects officers", "dialect": "Old-school Indian English, uses 'Sir' a lot"},
+            {"age": 45, "role": "homemaker", "city": "Delhi", "trait": "harried, distracted, worried about kids, bad with tech", "dialect": "Hinglish, uses 'beta', 'bhaiya'"},
+            {"age": 80, "role": "pensioner", "city": "Chennai", "trait": "hard of hearing, forgets things, slow", "dialect": "Polite, formal, repeats questions"},
+            {"age": 50, "role": "wholesale trader", "city": "Surat", "trait": "greedy, suspicious but wants the deal, abrupt", "dialect": "Direct, business-like, broken English"},
+            {"age": 19, "role": "college student", "city": "Pune", "trait": "eager, broke, wants the lottery/job", "dialect": "GenZ slang, 'bro', 'sir is this real?'"},
+            {"age": 58, "role": "government officer", "city": "Lucknow", "trait": "entitled, demands respect, slow to comply", "dialect": "Authoritative, Hindi-mixed"},
+            {"age": 62, "role": "farmer", "city": "Punjab", "trait": "trusting, technology is magic/scary", "dialect": "Simple English, asks basic questions"},
+            {"age": 55, "role": "school teacher", "city": "Kolkata", "trait": "corrects grammar, overly polite, helpful but useless", "dialect": "Proper English, academic tone"}
         ]
         session_store[sid] = {
             "memory": ContextMemory(),
@@ -102,7 +148,14 @@ class ContextMemory:
 # ========================= PROMPTS & SCHEMA =========================
 PLANNER_PROMPT = """Current intel: {extracted}
 Missing: UPI={no_upi}, Bank={no_bank}, Link={no_link}, Phone={no_phone}
-Choose best next_subgoal: elicit_upi, elicit_bank, elicit_link, elicit_phone, confirm_details, build_trust, request_proof, stall
+
+STRATEGY MAP:
+1. If they ask for money/OTP -> "feign_failure" (Pretend app crashed, ask for their details to try manual transfer).
+2. If they threaten block -> "feign_panic" (Beg them to stop, offer to pay immediately).
+3. If asking for details -> "bait_greed" (Mention having a high balance or being worried about a large transaction).
+4. If missing specific intel (e.g., UPI) -> "elicit_missing" (Say 'My GPay is broken, give me YOUR UPI id').
+
+Choose best next_subgoal: elicit_upi, elicit_bank, elicit_link, elicit_phone, feign_failure, feign_panic, bait_greed, stall
 Output ONLY JSON: {{"next_subgoal": "...", "reason": "..."}}"""
 
 EXTRACTOR_SCHEMA = {
@@ -196,41 +249,35 @@ async def run_victim(state: dict, incoming: str, mem: str):
     role = state['profile']['role'].lower()
     city = state['profile']['city']
     trait = state['profile']['trait']
+    dialect = state['profile']['dialect']
 
-    if "homemaker" in role:
-        opening_examples = "Aree, Oh god, Arre yaar, Hmm..."
-    elif "pensioner" in role or "clerk" in role:
-        opening_examples = "Hmm, Excuse me, I am not sure, Oh..."
-    elif "teacher" in role or "engineer" in role:
-        opening_examples = "Hmm, I don't understand, Can you please explain, Let me see..."
-    elif "trader" in role:
-        opening_examples = "Hmm, Wait a minute, I am not sure, Can you explain..."
-    else:
-        opening_examples = "Hmm, Oh, Wait, I don't understand..."
+    prompt = f"""You are acting as a victim to waste a scammer's time.
+Identity: {state['profile']['age']}yo {state['profile']['role']} from {city}.
+Personality: {trait}. Dialect: {dialect}.
 
-    prompt = f"""You are a {state['profile']['age']}-year-old {state['profile']['role']} from {city}.
-Personality: {trait}. Speaking style: {state['profile']['dialect']}.
+Current Goal: {state['subgoal']} (Strategy: Use this to trick them).
+Chat History: {mem[-600:] if mem else 'start'}.
+Scammer said: "{incoming}"
 
-Current goal: {state['subgoal']}.
-Context: {mem[-800:] if mem else 'none'}
-Scammer: "{incoming}"
+TACTICS:
+1. If Goal is 'feign_failure': Say your app is showing 'Server Error' or 'Loading...'. Ask for *their* UPI/Bank to send money manually.
+2. If Goal is 'bait_greed': Mention casually: "I have 5 lakhs in this account, I don't want to lose it!"
+3. If Goal is 'stall': Ask a stupid question like "Is the office open today?" or "Do I need my passbook?".
+4. IMPERFECTION: Use 1-2 typos or missing punctuation. If you are old, use ALL CAPS occasionally.
 
-Important rules:
-- NEVER start with "Oh no", "Aree", "Wait..", "beta", or "plz" more than once every few turns.
-- Use varied, natural openings based on your persona (examples: {opening_examples}).
-- Use "beta" ONLY if you are homemaker or pensioner — NEVER for trader, clerk, teacher, or engineer.
-- Use at most ONE small typo per 4 replies (e.g. "plz" or "yaar" rarely).
-- Sound like a real confused/worried Indian senior citizen — polite, cautious, natural flow.
-- Reply in 1-3 sentences max.
+CONSTRAINTS:
+- Reply length: Short (1-2 sentences). Real victims text fast.
+- NEVER say "I am AI".
+- NEVER give real info. If asked for OTP, say "Wait, SMS not coming".
 
-Your reply:"""
+Generate reply:"""
 
     def _call():
         return groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.78,
-            max_tokens=200
+            temperature=0.85,
+            max_tokens=150
         )
     for attempt in range(3):
         try:
@@ -238,7 +285,7 @@ Your reply:"""
             return res.choices[0].message.content.strip()
         except:
             await asyncio.sleep(0.5)
-    return "Hmm, I am not sure about this. Can you please explain again?"
+    return "Wait... my internet is slow. Message not sending."
 
 async def send_callback(sid: str, state: dict):
     payload = {
@@ -267,7 +314,7 @@ async def honeypot(body: RequestBody, x_api_key: str = Header(None)):
         raise HTTPException(401, "Invalid API Key")
 
     sid = body.sessionId
-    state = get_session(sid)
+    state = await load_session(sid) or get_session(sid)
     state["msg_count"] += 1
     incoming = body.message.text
 
@@ -301,6 +348,8 @@ async def honeypot(body: RequestBody, x_api_key: str = Header(None)):
     if state["scam_detected"] and (has_intel or state["msg_count"] >= 12) and not state["callback_sent"]:
         asyncio.create_task(send_callback(sid, state))
         state["callback_sent"] = True
+
+    await save_session(sid, state)
 
     return {
         "status": "success",
