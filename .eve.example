@@ -1,0 +1,4 @@
+# API Keys
+GROQ_API_KEY=your_groq_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
+HONEYPOT_API_KEY=your_secret_honeypot_key_here
