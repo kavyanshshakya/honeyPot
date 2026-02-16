@@ -363,11 +363,10 @@ async def honeypot(body: RequestBody, x_api_key: str = Header(None)):
         state["memory"].add(f"Me: {reply}")
     else:
         reply = "Who is this? Stop spamming me."
-
-    has_intel = bool(state["extracted"]["upiIds"] or state["extracted"]["bankAccounts"] or state["extracted"]["phishingLinks"] or state["extracted"]["phoneNumbers"] or state["extracted"]["emailAddresses"])
-    if state["scam_detected"] and (has_intel or state["msg_count"] >= 12) and not state["callback_sent"]:
+        
+    # Send callback every turn once scam is detected 
+    if state["scam_detected"]:
         asyncio.create_task(send_callback(sid, state))
-        state["callback_sent"] = True
 
     await save_session(sid, state)
 
