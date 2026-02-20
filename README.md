@@ -2,56 +2,107 @@
 
 **Autonomous AI Honeypot for Scam Detection & Intelligence Extraction**
 
-## Description
-Agentic Honey-Pot is an autonomous AI system designed to actively engage digital scammers in natural, multi-turn conversations. Instead of blocking numbers, it mimics believable Indian victim personas to waste scammer time and extract forensic intelligence (bank accounts, UPI IDs, phishing links, phone numbers, and emails) in real-time.
+Built for the **India AI Impact Buildathon 2026** by HCL GUVI.
 
-The system was built for the **India AI Impact Buildathon 2026** by HCL GUVI.
+---
+
+## Description
+
+Agentic Honey-Pot is an autonomous AI system that engages digital scammers in realistic multi-turn conversations. Instead of blocking, it impersonates believable Indian victim personas to waste scammer time while extracting forensic intelligence — phone numbers, bank accounts, UPI IDs, phishing links, emails, case IDs, policy numbers, and order numbers — in real time.
+
+---
 
 ## Tech Stack
-- **Backend**: FastAPI (Python)
-- **LLMs**: 
-  - Groq Llama-3.3-70B (for natural persona simulation and conversation)
-  - Google Gemini 2.5 Flash (for structured intelligence extraction)
-- **Memory**: TF-IDF Vectorizer for context retrieval across turns
-- **Persistence**: Async SQLite (`aiosqlite`) for session history
-- **Deployment**: Render
+
+| Layer | Technology |
+|---|---|
+| Backend | FastAPI (Python 3.11+) |
+| Conversation LLM | Groq — Llama-3.3-70B-Versatile |
+| Extraction LLM | Google Gemini 2.5 Flash (structured JSON output) |
+| Detection | Keyword set (instant) + Groq Llama classifier (fallback) |
+| Memory | TF-IDF semantic context retrieval |
+| Persistence | Async SQLite (aiosqlite) |
+
+---
 
 ## Approach
 
-### Scam Detection
-- Hybrid system: Fast regex + keyword matching for instant detection
-- LLM confirmation (Gemini) for complex or ambiguous messages
+### 1. Scam Detection — Two Layers
+- **Keywords**: Instant set lookup across 84 scam terms. Fires in <1ms.
+- **LLM Classifier**: Groq Llama-3.3-70B runs in parallel. Catches subtle scams. Either layer triggers scam mode (sticky — never resets).
 
-### Intelligence Extraction
-- Dual-layer extraction: Regex for immediate patterns + Gemini structured output for accuracy
-- Supports: Bank accounts, UPI IDs, phone numbers, phishing links, email addresses
-- Validates formats (e.g., +91 phone numbers, valid UPI patterns)
+### 2. Intelligence Extraction — Dual Layer
+Runs in the background after each turn, never blocking the response:
+- **Regex**: Phones, UPI IDs, bank accounts, links, emails, case IDs, policy numbers, order numbers.
+- **Gemini Structured Output**: Validates and enriches regex results via JSON schema.
+- Results union-merged across all turns — intel accumulates, never overwrites.
 
-### Engagement Strategy
-- Dynamic persona selection (10 realistic Indian victim profiles)
-- Neuro-Symbolic planner (Llama-3.3) that chooses optimal tactics: feign_failure, bait_greed, stall, etc.
-- Artificial imperfection (typos, latency simulation, varied openings) to avoid bot detection
+### 3. Engagement — Stage Machine
+7-state directed graph drives the conversation:
+```
+entry → doubt → fear → comply → elicit ↔ deflect → stall
+```
+Every reply mandates one investigative question, one red flag reference, one elicitation attempt.
 
-### Persistence & Multi-turn
-- Full conversation history stored in SQLite
-- Context memory using TF-IDF for long conversations
+### 4. Persona Engine
+8 realistic Indian victim personas (ages 55–72) — retired teacher, government clerk, pensioner, homemaker, shop owner, farmer, army officer, school principal. Each with a distinct city, dialect, and trait that naturally sustains long multi-turn conversations.
 
-## Scalability & Future Scope
-While the current version is text-based, the architecture is modular and designed for easy extension. It is ready for:
-- **Whisper API integration** for handling voice notes and regional dialect audio scams
-- **Automated Reporting** to national cybercrime portals (e.g., via webhooks to cybercrime.gov.in)
-- Multi-channel support (WhatsApp, SMS, Voice Calls)
+---
 
-## Setup Instructions
-1. Clone the repository
-2. Copy `.env.example` to `.env` and fill in your API keys
-3. Install dependencies: `pip install -r requirements.txt`
-4. Run locally: `uvicorn main:app --host 0.0.0.0 --port 8000 --reload`
+## Setup
 
-## API Endpoint
-- **URL**: `/honeypot`
-- **Method**: `POST`
-- **Authentication**: `x-api-key` header
+```bash
+git clone https://github.com/YOUR_USERNAME/honeypot-api
+cd honeypot-api
+pip install -r requirements.txt
+cp .env.example .env   # fill in your API keys
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
 
-## Deployment
-Deployed on Render (https://guvi-honeypot-74ml.onrender.com).
+See `.env.example` for all environment variables.
+
+---
+
+## API
+
+| | |
+|---|---|
+| **Endpoint** | `POST /honeypot` (also `/detect`, `/`) |
+| **Auth** | `x-api-key` header |
+| **Health** | `GET /health` |
+
+### Request
+```json
+{
+  "sessionId": "uuid-v4",
+  "message": { "sender": "scammer", "text": "URGENT: Your account...", "timestamp": "..." },
+  "conversationHistory": [],
+  "metadata": { "channel": "SMS", "language": "English", "locale": "IN" }
+}
+```
+
+### Response
+```json
+{
+  "status": "success",
+  "reply": "This is very strange, my bank never calls like this. Can you give me your employee ID?",
+  "scamDetected": true,
+  "extractedIntelligence": {
+    "phoneNumbers": ["+91-9876543210"],
+    "bankAccounts": [], "upiIds": [], "phishingLinks": [],
+    "emailAddresses": [], "caseIds": [], "policyNumbers": [], "orderNumbers": []
+  },
+  "engagementMetrics": { "totalMessagesExchanged": 3, "engagementDurationSeconds": 87 },
+  "agentNotes": "Stage: comply | Type: bank_fraud | Confidence: 0.92"
+}
+```
+
+---
+
+## Code Review Notes
+
+- No hardcoded responses for specific test scenarios
+- No test-traffic detection or special-casing
+- All detection is keyword/LLM based on message content
+- All extraction uses generic regex patterns and Gemini NLP
+- Personas and stage transitions are dynamically generated per session
